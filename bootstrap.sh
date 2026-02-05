@@ -226,6 +226,43 @@ create_non_root_user() {
 
 
 
+
+ensure_npm_global_path() {
+  detect_openclaw_user
+  if ! command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local prefix
+  prefix="$(sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config get prefix 2>/dev/null || true)"
+  if [[ -z "$prefix" || "$prefix" == "null" ]]; then
+    return 0
+  fi
+
+  local bin_dir="${prefix}/bin"
+  local home_dir
+  home_dir="$(get_openclaw_user_home)"
+
+  if [[ -n "$bin_dir" ]]; then
+    sudo -u "$OPENCLAW_RUN_AS_USER" -H mkdir -p "$bin_dir" 2>/dev/null || true
+    export PATH="$bin_dir:$PATH"
+  fi
+
+  local line="export PATH=\"${bin_dir}:\$PATH\""
+  local bashrc="${home_dir}/.bashrc"
+  local zshrc="${home_dir}/.zshrc"
+
+  for rc in "$bashrc" "$zshrc"; do
+    if [[ -f "$rc" ]]; then
+      if ! grep -q "$bin_dir" "$rc"; then
+        echo "$line" | sudo -u "$OPENCLAW_RUN_AS_USER" -H tee -a "$rc" >/dev/null
+      fi
+    else
+      echo "$line" | sudo -u "$OPENCLAW_RUN_AS_USER" -H tee "$rc" >/dev/null
+    fi
+  done
+}
+
 wait_for_user() {
   local username="$1"
   local retries=5
@@ -715,6 +752,7 @@ run_openclaw_config() {
 
 main() {
   configure_memory
+  ensure_npm_global_path
   install_openclaw
   ensure_gateway_service
   setup_coding_plan
