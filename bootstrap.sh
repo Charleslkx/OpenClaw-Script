@@ -535,8 +535,35 @@ ensure_gateway_service() {
 
   if ! bash -c "systemctl --user show-environment >/dev/null 2>&1"; then
     log_warn "systemctl --user 不可用，可能未启用用户会话或缺少 dbus-user-session。"
-    log_warn "请以 root 登录一次，或安装 dbus-user-session 后重试。"
-    return 1
+
+    if [[ $EUID -eq 0 ]]; then
+      if command -v loginctl >/dev/null 2>&1; then
+        log_info "尝试启用 root 的 linger..."
+        loginctl enable-linger root || true
+      fi
+      log_info "尝试启动 user@0.service..."
+      systemctl start user@0.service || true
+      if [[ -d /run/user/0 ]]; then
+        export XDG_RUNTIME_DIR=/run/user/0
+      fi
+    fi
+
+    if command -v dpkg >/dev/null 2>&1; then
+      if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
+        if ask_yes_no "检测到缺少 dbus-user-session，是否自动安装?" "Y"; then
+          log_info "安装 dbus-user-session..."
+          apt-get update -y
+          apt-get install -y dbus-user-session
+        else
+          log_warn "已跳过 dbus-user-session 安装。"
+        fi
+      fi
+    fi
+
+    if ! bash -c "systemctl --user show-environment >/dev/null 2>&1"; then
+      log_warn "systemctl --user 仍不可用，请以 root 登录一次或手动安装 dbus-user-session 后重试。"
+      return 1
+    fi
   fi
 
   if ! openclaw gateway install; then
