@@ -632,6 +632,25 @@ setup_coding_plan() {
 
 
 run_openclaw_config() {
+  echo
+  log_warn "=================== 重要提示 ==================="
+  echo
+  echo "在进入配置之前，请注意："
+  echo
+  echo "1. 设置完成后，需要从飞书向机器人发送一条测试消息"
+  echo "2. 获取 Pairing code"
+  echo "3. 使用以下命令完成认证："
+  echo
+  echo "   openclaw pairing approve feishu \${Pairing code}"
+  echo
+  log_warn "=============================================="
+  echo
+
+  if ! ask_yes_no "是否现在进入 openclaw config?" "Y"; then
+    log_warn "已跳过 openclaw config，您可以稍后手动运行: openclaw config"
+    return 0
+  fi
+
   log_info "进入 openclaw config 完成后续配置..."
   openclaw config
 }
