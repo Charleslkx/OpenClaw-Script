@@ -13,6 +13,98 @@ log_warn() { echo -e "${WARN}$*${NC}"; }
 log_error() { echo -e "${ERROR}$*${NC}"; }
 log_ok() { echo -e "${SUCCESS}$*${NC}"; }
 
+
+OPENCLAW_RUN_AS_USER=""
+OPENCLAW_USER_PREFIX=""
+
+detect_openclaw_user() {
+  if [[ -n "${OPENCLAW_RUN_AS_USER:-}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${OPENCLAW_USER:-}" ]]; then
+    OPENCLAW_RUN_AS_USER="$OPENCLAW_USER"
+  elif [[ $EUID -ne 0 ]]; then
+    OPENCLAW_RUN_AS_USER="$(id -un)"
+  elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    OPENCLAW_RUN_AS_USER="$SUDO_USER"
+  else
+    log_info "检测到以 root 运行，必须指定非 root 用户。"
+    local candidates
+    candidates="$(list_non_root_users || true)"
+    if [[ -n "$candidates" ]]; then
+      echo "可用非 root 用户:"
+      echo "$candidates" | sed 's/^/  - /'
+    else
+      log_warn "未检测到可用的非 root 用户。"
+    fi
+
+    if ask_yes_no "是否创建新用户?" "Y"; then
+      OPENCLAW_RUN_AS_USER="$(create_non_root_user "")"
+    fi
+
+    if [[ -z "$OPENCLAW_RUN_AS_USER" ]]; then
+      while true; do
+        read -r -p "请输入运行 OpenClaw 的系统用户: " OPENCLAW_RUN_AS_USER
+        if [[ -n "$OPENCLAW_RUN_AS_USER" && "$OPENCLAW_RUN_AS_USER" != "root" ]]; then
+          break
+        fi
+        echo "请提供一个非 root 用户名。"
+      done
+    fi
+  fi
+
+  if [[ -z "$OPENCLAW_RUN_AS_USER" || "$OPENCLAW_RUN_AS_USER" == "root" ]]; then
+    log_error "OpenClaw 必须使用非 root 用户运行。"
+    exit 1
+  fi
+
+  if ! id "$OPENCLAW_RUN_AS_USER" >/dev/null 2>&1; then
+    log_error "用户 $OPENCLAW_RUN_AS_USER 不存在。"
+    exit 1
+  fi
+
+  if command -v npm >/dev/null 2>&1; then
+    OPENCLAW_USER_PREFIX="$(sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config get prefix 2>/dev/null || true)"
+  fi
+}
+
+
+
+run_as_openclaw_user() {
+  detect_openclaw_user
+  local cmd=("$@")
+  local prefix_path=""
+  if [[ -n "${OPENCLAW_USER_PREFIX:-}" ]]; then
+    prefix_path="${OPENCLAW_USER_PREFIX}/bin"
+  fi
+
+  if [[ "$(id -un)" == "$OPENCLAW_RUN_AS_USER" ]]; then
+    if [[ -n "$prefix_path" ]]; then
+      PATH="$prefix_path:$PATH" "${cmd[@]}"
+    else
+      "${cmd[@]}"
+    fi
+  else
+    if [[ -n "$prefix_path" ]]; then
+      sudo -u "$OPENCLAW_RUN_AS_USER" -H env PATH="$prefix_path:$PATH" "${cmd[@]}"
+    else
+      sudo -u "$OPENCLAW_RUN_AS_USER" -H "${cmd[@]}"
+    fi
+  fi
+}
+
+get_openclaw_user_home() {
+  detect_openclaw_user
+  local home_dir
+  home_dir="$(getent passwd "$OPENCLAW_RUN_AS_USER" 2>/dev/null | cut -d: -f6)"
+  if [[ -z "$home_dir" ]]; then
+    home_dir="$(eval echo "~$OPENCLAW_RUN_AS_USER" 2>/dev/null || true)"
+  fi
+  echo "$home_dir"
+}
+
+
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -75,6 +167,124 @@ prompt_text() {
 
 is_linux() {
   [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]]
+}
+
+
+
+create_non_root_user() {
+  local username="$1"
+  if [[ -z "$username" ]]; then
+    read -r -p "请输入要创建的用户名: " username
+  fi
+
+  if [[ -z "$username" ]]; then
+    log_error "用户名不能为空。"
+    return 1
+  fi
+
+  if id "$username" >/dev/null 2>&1; then
+    log_error "用户 $username 已存在。"
+    return 1
+  fi
+
+  log_info "创建用户: $username"
+  if command -v adduser >/dev/null 2>&1; then
+    as_root adduser --gecos "" "$username"
+  else
+    as_root useradd -m -s /bin/bash "$username"
+    if ask_yes_no "是否为 $username 设置密码?" "Y"; then
+      as_root passwd "$username"
+    else
+      log_warn "未设置密码，建议使用 SSH key 登录。"
+    fi
+  fi
+
+  local sudo_group=""
+  if getent group sudo >/dev/null 2>&1; then
+    sudo_group="sudo"
+  elif getent group wheel >/dev/null 2>&1; then
+    sudo_group="wheel"
+  fi
+
+  if [[ -n "$sudo_group" ]]; then
+    as_root usermod -aG "$sudo_group" "$username"
+    log_ok "已将 $username 加入 $sudo_group 组。"
+  else
+    log_warn "未找到 sudo/wheel 组，请手动配置 sudo 权限。"
+  fi
+
+  echo "$username"
+}
+
+
+
+enable_user_linger() {
+  detect_openclaw_user
+  if command -v loginctl >/dev/null 2>&1; then
+    as_root loginctl enable-linger "$OPENCLAW_RUN_AS_USER" >/dev/null 2>&1 || true
+  fi
+}
+
+list_non_root_users() {
+  if ! command -v getent >/dev/null 2>&1; then
+    return 1
+  fi
+  getent passwd | awk -F: '($3>=1000)&&($1!="nobody")&&($7!~/(\/usr\/sbin\/nologin|\/bin\/false)/){print $1}'
+}
+
+# 检查是否已有 zram 配置
+has_zram_configured() {
+  # 检查是否存在 zram 设备且已启用 swap
+  if swapon --show=NAME --noheadings 2>/dev/null | grep -q "^/dev/zram"; then
+    return 0
+  fi
+  # 检查是否存在 zram 服务
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-units --type=service --all 2>/dev/null | grep -q "zram"; then
+    return 0
+  fi
+  return 1
+}
+
+# 检查是否已有 swap 配置（不包括 zram）
+has_swap_configured() {
+  # 检查是否存在非 zram 的 swap
+  if swapon --show=NAME --noheadings 2>/dev/null | grep -v "^/dev/zram" | grep -q .; then
+    return 0
+  fi
+  # 检查是否存在 swapfile
+  if [[ -f /swapfile ]]; then
+    return 0
+  fi
+  # 检查 /etc/fstab 中是否有 swap 配置
+  if grep -v "^#" /etc/fstab 2>/dev/null | grep -q "swap"; then
+    return 0
+  fi
+  return 1
+}
+
+# 输出当前内存配置信息
+show_current_memory_config() {
+  log_info "当前内存配置信息："
+  echo
+  echo "- 物理内存:"
+  free -h 2>/dev/null || cat /proc/meminfo 2>/dev/null | head -5
+  echo
+  echo "- Swap 状态:"
+  swapon --show 2>/dev/null || echo "  无 swap 配置"
+  echo
+  echo "- Zram 状态:"
+  if [[ -d /sys/block/zram0 ]]; then
+    echo "  zram0 存在"
+    if [[ -r /sys/block/zram0/comp_algorithm ]]; then
+      echo "  压缩算法: $(cat /sys/block/zram0/comp_algorithm 2>/dev/null | tr -d '[]')"
+    fi
+    if [[ -r /sys/block/zram0/disksize ]]; then
+      echo "  磁盘大小: $(cat /sys/block/zram0/disksize 2>/dev/null | numfmt --to=iec 2>/dev/null || cat /sys/block/zram0/disksize 2>/dev/null)"
+    fi
+  else
+    echo "  无 zram 配置"
+  fi
+  echo
 }
 
 get_mem_mb() {
@@ -304,6 +514,29 @@ configure_memory() {
     return 0
   fi
 
+  # 检查是否已有配置
+  local has_zram=false
+  local has_swap=false
+
+  if has_zram_configured; then
+    has_zram=true
+  fi
+
+  if has_swap_configured; then
+    has_swap=true
+  fi
+
+  # 如果已有配置，跳过并显示信息
+  if [[ "$has_zram" == true || "$has_swap" == true ]]; then
+    log_info "检测到已有内存配置："
+    [[ "$has_zram" == true ]] && echo "  - ZRAM: 已配置"
+    [[ "$has_swap" == true ]] && echo "  - SWAP: 已配置"
+    echo
+    show_current_memory_config
+    log_ok "跳过 zram/swap 配置（已有配置）。"
+    return 0
+  fi
+
   calc_defaults "$mem_mb"
   local default_comp
   default_comp="$(pick_compression)"
@@ -379,29 +612,43 @@ configure_memory() {
 install_openclaw() {
   log_info "开始安装 OpenClaw (跳过 onboarding)..."
   require_cmd curl
-  curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
+  run_as_openclaw_user bash -c "curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard"
 
-  if ! command -v openclaw >/dev/null 2>&1; then
-    local npm_bin
-    npm_bin="$(npm bin -g 2>/dev/null || true)"
-    if [[ -n "$npm_bin" ]]; then
-      export PATH="$npm_bin:$PATH"
-    fi
-  fi
-
-  if ! command -v openclaw >/dev/null 2>&1; then
-    log_error "未找到 openclaw 命令，请重新打开终端或手动加入 PATH 后再继续。"
+  if ! run_as_openclaw_user bash -c "command -v openclaw >/dev/null 2>&1"; then
+    log_error "未找到 openclaw 命令，请确认安装用户或 PATH 配置。"
     exit 1
   fi
 
   log_ok "OpenClaw 安装完成。"
 }
 
-install_plugins() {
-  log_info "安装飞书插件..."
-  openclaw plugins install @m1heng-clawd/feishu
-  log_ok "飞书插件安装完成。"
+
+ensure_gateway_service() {
+  log_info "检查 Gateway service..."
+  local home_dir
+  local unit_path
+  home_dir="$(get_openclaw_user_home)"
+  unit_path="${home_dir}/.config/systemd/user/openclaw-gateway.service"
+
+  if [[ -f "$unit_path" ]]; then
+    log_ok "Gateway service 已存在: $unit_path"
+    return 0
+  fi
+
+  log_warn "未找到 Gateway service，准备安装（用户: ${OPENCLAW_RUN_AS_USER}）。"
+  enable_user_linger
+  if ! run_as_openclaw_user openclaw gateway install; then
+    log_warn "Gateway service 安装失败，请手动执行: openclaw gateway install"
+    return 1
+  fi
+
+  if [[ -f "$unit_path" ]]; then
+    log_ok "Gateway service 已安装: $unit_path"
+  else
+    log_warn "Gateway service 安装完成，但未检测到 unit 文件。"
+  fi
 }
+
 
 setup_coding_plan() {
   if ask_yes_no "是否使用字节 Coding Plan?" "N"; then
@@ -430,14 +677,8 @@ setup_coding_plan() {
       echo "App Secret 不能为空。"
     done
     echo
-
     log_info "开始安装 Coding Plan 配置..."
-    curl -fsSL https://openclaw.tos-cn-beijing.volces.com/setup.sh | bash -s -- \
-      --ark-coding-plan "true" \
-      --ark-api-key "$ark_key" \
-      --ark-model-id "$model_id" \
-      --feishu-app-id "$feishu_app_id" \
-      --feishu-app-secret "$feishu_app_secret"
+    run_as_openclaw_user bash -c "curl -fsSL https://openclaw.tos-cn-beijing.volces.com/setup.sh | bash -s -- --ark-coding-plan \"true\" --ark-api-key \"$ark_key\" --ark-model-id \"$model_id\" --feishu-app-id \"$feishu_app_id\" --feishu-app-secret \"$feishu_app_secret\""
     log_ok "Coding Plan 配置完成。"
   else
     log_warn "已跳过 Coding Plan 配置。"
@@ -446,13 +687,13 @@ setup_coding_plan() {
 
 run_openclaw_config() {
   log_info "进入 openclaw config 完成后续配置..."
-  openclaw config
+  run_as_openclaw_user openclaw config
 }
 
 main() {
   configure_memory
   install_openclaw
-  install_plugins
+  ensure_gateway_service
   setup_coding_plan
   run_openclaw_config
 }
