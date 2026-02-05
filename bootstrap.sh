@@ -13,142 +13,6 @@ log_warn() { echo -e "${WARN}$*${NC}"; }
 log_error() { echo -e "${ERROR}$*${NC}"; }
 log_ok() { echo -e "${SUCCESS}$*${NC}"; }
 
-
-OPENCLAW_RUN_AS_USER=""
-OPENCLAW_USER_PREFIX=""
-
-detect_openclaw_user() {
-  if [[ -n "${OPENCLAW_RUN_AS_USER:-}" ]]; then
-    return 0
-  fi
-
-  if [[ -n "${OPENCLAW_USER:-}" ]]; then
-    OPENCLAW_RUN_AS_USER="$OPENCLAW_USER"
-  elif [[ $EUID -ne 0 ]]; then
-    OPENCLAW_RUN_AS_USER="$(id -un)"
-  elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-    OPENCLAW_RUN_AS_USER="$SUDO_USER"
-  else
-    log_info "检测到以 root 运行，必须指定非 root 用户。"
-    local candidates
-    candidates="$(list_non_root_users || true)"
-    if [[ -n "$candidates" ]]; then
-      echo "可用非 root 用户:"
-      echo "$candidates" | sed 's/^/  - /'
-    else
-      log_warn "未检测到可用的非 root 用户。"
-    fi
-
-    if ask_yes_no "是否创建新用户?" "Y"; then
-      OPENCLAW_RUN_AS_USER="$(create_non_root_user "")" || OPENCLAW_RUN_AS_USER=""
-    fi
-
-    if [[ -z "$OPENCLAW_RUN_AS_USER" ]]; then
-      while true; do
-        read -r -p "请输入运行 OpenClaw 的系统用户: " OPENCLAW_RUN_AS_USER
-        if [[ -n "$OPENCLAW_RUN_AS_USER" && "$OPENCLAW_RUN_AS_USER" != "root" ]]; then
-          break
-        fi
-        echo "请提供一个非 root 用户名。"
-      done
-    fi
-  fi
-
-  if [[ -z "$OPENCLAW_RUN_AS_USER" || "$OPENCLAW_RUN_AS_USER" == "root" ]]; then
-    log_error "OpenClaw 必须使用非 root 用户运行。"
-    exit 1
-  fi
-
-  if ! id "$OPENCLAW_RUN_AS_USER" >/dev/null 2>&1; then
-    log_error "用户 $OPENCLAW_RUN_AS_USER 不存在。"
-    exit 1
-  fi
-
-  if command -v npm >/dev/null 2>&1; then
-    OPENCLAW_USER_PREFIX="$(sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config get prefix 2>/dev/null || true)"
-  fi
-}
-
-
-
-run_as_openclaw_user() {
-  detect_openclaw_user
-  local cmd=("$@")
-  local prefix_path=""
-  if [[ -n "${OPENCLAW_USER_PREFIX:-}" ]]; then
-    prefix_path="${OPENCLAW_USER_PREFIX}/bin"
-  fi
-
-  local uid
-  uid="$(get_openclaw_user_uid)"
-  local runtime=""
-  local env_args=()
-  if [[ -n "$uid" ]]; then
-    runtime="/run/user/${uid}"
-    if [[ -d "$runtime" ]]; then
-      env_args+=("XDG_RUNTIME_DIR=$runtime" "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus")
-    fi
-  fi
-
-  if [[ "$(id -un)" == "$OPENCLAW_RUN_AS_USER" ]]; then
-    if [[ -n "$prefix_path" ]]; then
-      env "${env_args[@]}" PATH="$prefix_path:$PATH" "${cmd[@]}"
-    else
-      env "${env_args[@]}" "${cmd[@]}"
-    fi
-  else
-    if [[ -n "$prefix_path" ]]; then
-      sudo -u "$OPENCLAW_RUN_AS_USER" -H env "${env_args[@]}" PATH="$prefix_path:$PATH" "${cmd[@]}"
-    else
-      sudo -u "$OPENCLAW_RUN_AS_USER" -H env "${env_args[@]}" "${cmd[@]}"
-    fi
-  fi
-}
-
-
-get_openclaw_user_home() {
-  detect_openclaw_user
-  local home_dir
-  home_dir="$(getent passwd "$OPENCLAW_RUN_AS_USER" 2>/dev/null | cut -d: -f6)"
-  if [[ -z "$home_dir" ]]; then
-    home_dir="$(eval echo "~$OPENCLAW_RUN_AS_USER" 2>/dev/null || true)"
-  fi
-  echo "$home_dir"
-}
-
-
-get_openclaw_user_uid() {
-  detect_openclaw_user
-  id -u "$OPENCLAW_RUN_AS_USER" 2>/dev/null || true
-}
-
-ensure_user_systemd() {
-  detect_openclaw_user
-  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
-    return 1
-  fi
-
-  local uid
-  uid="$(get_openclaw_user_uid)"
-  if [[ -z "$uid" ]]; then
-    return 1
-  fi
-
-  if command -v loginctl >/dev/null 2>&1; then
-    as_root loginctl enable-linger "$OPENCLAW_RUN_AS_USER" >/dev/null 2>&1 || true
-  fi
-
-  as_root systemctl start "user@${uid}.service" >/dev/null 2>&1 || true
-
-  local runtime="/run/user/${uid}"
-  if [[ ! -d "$runtime" ]]; then
-    as_root mkdir -p "$runtime" >/dev/null 2>&1 || true
-    as_root chown "$OPENCLAW_RUN_AS_USER":"$OPENCLAW_RUN_AS_USER" "$runtime" >/dev/null 2>&1 || true
-    as_root chmod 700 "$runtime" >/dev/null 2>&1 || true
-  fi
-}
-
-
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -222,84 +86,26 @@ is_linux() {
 
 
 
-create_non_root_user() {
-  local username="$1"
-  if [[ -z "$username" ]]; then
-    read -r -p "请输入要创建的用户名: " username
-  fi
-
-  if [[ -z "$username" ]]; then
-    echo -e "${ERROR}用户名不能为空。${NC}" >&2
-    return 1
-  fi
-
-  if id "$username" >/dev/null 2>&1; then
-    echo -e "${ERROR}用户 $username 已存在。${NC}" >&2
-    return 1
-  fi
-
-  echo -e "${INFO}创建用户: $username${NC}" >&2
-  if command -v adduser >/dev/null 2>&1; then
-    as_root adduser --gecos "" "$username" 1>&2
-  else
-    as_root useradd -m -s /bin/bash "$username" 1>&2
-    if ask_yes_no "是否为 $username 设置密码?" "Y"; then
-      as_root passwd "$username"
-    else
-      echo -e "${WARN}未设置密码，建议使用 SSH key 登录。${NC}" >&2
-    fi
-  fi
-
-  if ! wait_for_user "$username"; then
-    echo -e "${ERROR}创建用户后未检测到账号，请稍后重试。${NC}" >&2
-    return 1
-  fi
-
-  local sudo_group=""
-  if getent group sudo >/dev/null 2>&1; then
-    sudo_group="sudo"
-  elif getent group wheel >/dev/null 2>&1; then
-    sudo_group="wheel"
-  fi
-
-  if [[ -n "$sudo_group" ]]; then
-    as_root usermod -aG "$sudo_group" "$username"
-    echo -e "${SUCCESS}已将 $username 加入 $sudo_group 组。${NC}" >&2
-  else
-    echo -e "${WARN}未找到 sudo/wheel 组，请手动配置 sudo 权限。${NC}" >&2
-  fi
-
-  echo "$username"
-}
-
-
-
-
-
 
 
 ensure_npm_global_path() {
-  detect_openclaw_user
   if ! command -v npm >/dev/null 2>&1; then
     return 0
   fi
 
-  local home_dir
-  home_dir="$(get_openclaw_user_home)"
+  local home_dir="${HOME:-/root}"
   local desired_prefix="${home_dir}/.npm-global"
 
   local prefix
-  prefix="$(sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config get prefix 2>/dev/null || true)"
+  prefix="$(npm config get prefix 2>/dev/null || true)"
   if [[ -z "$prefix" || "$prefix" == "null" || "$prefix" != "$desired_prefix" ]]; then
-    sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config set prefix "$desired_prefix" >/dev/null 2>&1 || true
+    npm config set prefix "$desired_prefix" >/dev/null 2>&1 || true
     prefix="$desired_prefix"
   fi
 
-  OPENCLAW_USER_PREFIX="$prefix"
-
   local bin_dir="${prefix}/bin"
   if [[ -n "$bin_dir" ]]; then
-    sudo -u "$OPENCLAW_RUN_AS_USER" -H mkdir -p "$bin_dir" 2>/dev/null || true
+    mkdir -p "$bin_dir" 2>/dev/null || true
     export PATH="$bin_dir:$PATH"
   fi
 
@@ -310,43 +116,14 @@ ensure_npm_global_path() {
   for rc in "$bashrc" "$zshrc"; do
     if [[ -f "$rc" ]]; then
       if ! grep -q "$bin_dir" "$rc"; then
-        echo "$line" | sudo -u "$OPENCLAW_RUN_AS_USER" -H tee -a "$rc" >/dev/null
+        echo "$line" >> "$rc"
       fi
     else
-      echo "$line" | sudo -u "$OPENCLAW_RUN_AS_USER" -H tee "$rc" >/dev/null
+      echo "$line" > "$rc"
     fi
   done
 }
 
-
-wait_for_user() {
-  local username="$1"
-  local retries=5
-  local delay=1
-  local i=0
-  while (( i < retries )); do
-    if id "$username" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep "$delay"
-    i=$((i+1))
-  done
-  return 1
-}
-
-enable_user_linger() {
-  detect_openclaw_user
-  if command -v loginctl >/dev/null 2>&1; then
-    as_root loginctl enable-linger "$OPENCLAW_RUN_AS_USER" >/dev/null 2>&1 || true
-  fi
-}
-
-list_non_root_users() {
-  if ! command -v getent >/dev/null 2>&1; then
-    return 1
-  fi
-  getent passwd | awk -F: '($3>=1000)&&($1!="nobody")&&($7!~/(\/usr\/sbin\/nologin|\/bin\/false)/){print $1}'
-}
 
 # 检查是否已有 zram 配置
 has_zram_configured() {
@@ -728,9 +505,9 @@ configure_memory() {
 install_openclaw() {
   log_info "开始安装 OpenClaw (跳过 onboarding)..."
   require_cmd curl
-  run_as_openclaw_user bash -c "curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard"
+  bash -c "curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard"
 
-  if ! run_as_openclaw_user bash -c "command -v openclaw >/dev/null 2>&1"; then
+  if ! command -v openclaw >/dev/null 2>&1; then
     log_error "未找到 openclaw 命令，请确认安装用户或 PATH 配置。"
     exit 1
   fi
@@ -741,9 +518,8 @@ install_openclaw() {
 
 ensure_gateway_service() {
   log_info "检查 Gateway service..."
-  local home_dir
+  local home_dir="${HOME:-/root}"
   local unit_path
-  home_dir="$(get_openclaw_user_home)"
   unit_path="${home_dir}/.config/systemd/user/openclaw-gateway.service"
 
   if [[ -f "$unit_path" ]]; then
@@ -751,16 +527,19 @@ ensure_gateway_service() {
     return 0
   fi
 
-  log_warn "未找到 Gateway service，准备安装（用户: ${OPENCLAW_RUN_AS_USER}）。"
-  ensure_user_systemd
-
-  if ! run_as_openclaw_user bash -c "systemctl --user show-environment >/dev/null 2>&1"; then
-    log_warn "systemctl --user 不可用，可能未启用用户会话或缺少 dbus-user-session。"
-    log_warn "请以该用户登录一次，或安装 dbus-user-session 后重试。"
+  log_warn "未找到 Gateway service，准备安装（用户: root）。"
+  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+    log_warn "未检测到 systemd，跳过 Gateway service 安装。"
     return 1
   fi
 
-  if ! run_as_openclaw_user openclaw gateway install; then
+  if ! bash -c "systemctl --user show-environment >/dev/null 2>&1"; then
+    log_warn "systemctl --user 不可用，可能未启用用户会话或缺少 dbus-user-session。"
+    log_warn "请以 root 登录一次，或安装 dbus-user-session 后重试。"
+    return 1
+  fi
+
+  if ! openclaw gateway install; then
     log_warn "Gateway service 安装失败，请手动执行: openclaw gateway install"
     return 1
   fi
@@ -776,29 +555,16 @@ ensure_gateway_service() {
 
 
 run_setup_sh_as_root() {
-  detect_openclaw_user
   require_cmd curl
 
-  local home_dir
-  home_dir="$(get_openclaw_user_home)"
   local setup_tmp
   setup_tmp="/tmp/openclaw-setup.sh"
 
   curl -fsSL https://openclaw.tos-cn-beijing.volces.com/setup.sh -o "$setup_tmp"
 
-  # Patch root paths to target user home.
-  sed -i \
-    -e "s#ENV_DIR=\\"/root/#ENV_DIR=\\"${home_dir}/#" \
-    -e "s#cd /root#cd ${home_dir}#" \
-    "$setup_tmp"
-
   chmod +x "$setup_tmp"
 
-  local prefix_path="${OPENCLAW_USER_PREFIX:-${home_dir}/.npm-global}/bin"
-  local env_path="${prefix_path}:$PATH"
-
-  # Run as root to allow /var/log writes, but point config to user home.
-  env PATH="$env_path" "$setup_tmp" "$@"
+  "$setup_tmp" "$@"
 }
 
 
@@ -840,7 +606,7 @@ setup_coding_plan() {
 
 run_openclaw_config() {
   log_info "进入 openclaw config 完成后续配置..."
-  run_as_openclaw_user openclaw config
+  openclaw config
 }
 
 main() {
