@@ -189,14 +189,19 @@ create_non_root_user() {
 
   echo -e "${INFO}创建用户: $username${NC}" >&2
   if command -v adduser >/dev/null 2>&1; then
-    as_root adduser --gecos "" "$username"
+    as_root adduser --gecos "" "$username" 1>&2
   else
-    as_root useradd -m -s /bin/bash "$username"
+    as_root useradd -m -s /bin/bash "$username" 1>&2
     if ask_yes_no "是否为 $username 设置密码?" "Y"; then
       as_root passwd "$username"
     else
       echo -e "${WARN}未设置密码，建议使用 SSH key 登录。${NC}" >&2
     fi
+  fi
+
+  if ! wait_for_user "$username"; then
+    echo -e "${ERROR}创建用户后未检测到账号，请稍后重试。${NC}" >&2
+    return 1
   fi
 
   local sudo_group=""
@@ -218,6 +223,23 @@ create_non_root_user() {
 
 
 
+
+
+
+wait_for_user() {
+  local username="$1"
+  local retries=5
+  local delay=1
+  local i=0
+  while (( i < retries )); do
+    if id "$username" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay"
+    i=$((i+1))
+  done
+  return 1
+}
 
 enable_user_linger() {
   detect_openclaw_user
