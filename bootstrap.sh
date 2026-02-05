@@ -767,6 +767,34 @@ ensure_gateway_service() {
 
 
 
+
+run_setup_sh_as_root() {
+  detect_openclaw_user
+  require_cmd curl
+
+  local home_dir
+  home_dir="$(get_openclaw_user_home)"
+  local setup_tmp
+  setup_tmp="/tmp/openclaw-setup.sh"
+
+  curl -fsSL https://openclaw.tos-cn-beijing.volces.com/setup.sh -o "$setup_tmp"
+
+  # Patch root paths to target user home.
+  sed -i \
+    -e "s#ENV_DIR=\\"/root/#ENV_DIR=\\"${home_dir}/#" \
+    -e "s#cd /root#cd ${home_dir}#" \
+    "$setup_tmp"
+
+  chmod +x "$setup_tmp"
+
+  local prefix_path="${OPENCLAW_USER_PREFIX:-${home_dir}/.npm-global}/bin"
+  local env_path="${prefix_path}:$PATH"
+
+  # Run as root to allow /var/log writes, but point config to user home.
+  env PATH="$env_path" "$setup_tmp" "$@"
+}
+
+
 setup_coding_plan() {
   if ask_yes_no "是否使用字节 Coding Plan?" "N"; then
     local ark_key
@@ -795,12 +823,13 @@ setup_coding_plan() {
     done
     echo
     log_info "开始安装 Coding Plan 配置..."
-    run_as_openclaw_user bash -c "curl -fsSL https://openclaw.tos-cn-beijing.volces.com/setup.sh | bash -s -- --ark-coding-plan \"true\" --ark-api-key \"$ark_key\" --ark-model-id \"$model_id\" --feishu-app-id \"$feishu_app_id\" --feishu-app-secret \"$feishu_app_secret\""
+    run_setup_sh_as_root --ark-coding-plan "true" --ark-api-key "$ark_key" --ark-model-id "$model_id" --feishu-app-id "$feishu_app_id" --feishu-app-secret "$feishu_app_secret"
     log_ok "Coding Plan 配置完成。"
   else
     log_warn "已跳过 Coding Plan 配置。"
   fi
 }
+
 
 run_openclaw_config() {
   log_info "进入 openclaw config 完成后续配置..."
