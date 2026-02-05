@@ -40,7 +40,7 @@ detect_openclaw_user() {
     fi
 
     if ask_yes_no "是否创建新用户?" "Y"; then
-      OPENCLAW_RUN_AS_USER="$(create_non_root_user "")"
+      OPENCLAW_RUN_AS_USER="$(create_non_root_user "")" || OPENCLAW_RUN_AS_USER=""
     fi
 
     if [[ -z "$OPENCLAW_RUN_AS_USER" ]]; then
@@ -178,16 +178,16 @@ create_non_root_user() {
   fi
 
   if [[ -z "$username" ]]; then
-    log_error "用户名不能为空。"
+    echo -e "${ERROR}用户名不能为空。${NC}" >&2
     return 1
   fi
 
   if id "$username" >/dev/null 2>&1; then
-    log_error "用户 $username 已存在。"
+    echo -e "${ERROR}用户 $username 已存在。${NC}" >&2
     return 1
   fi
 
-  log_info "创建用户: $username"
+  echo -e "${INFO}创建用户: $username${NC}" >&2
   if command -v adduser >/dev/null 2>&1; then
     as_root adduser --gecos "" "$username"
   else
@@ -195,7 +195,7 @@ create_non_root_user() {
     if ask_yes_no "是否为 $username 设置密码?" "Y"; then
       as_root passwd "$username"
     else
-      log_warn "未设置密码，建议使用 SSH key 登录。"
+      echo -e "${WARN}未设置密码，建议使用 SSH key 登录。${NC}" >&2
     fi
   fi
 
@@ -208,13 +208,14 @@ create_non_root_user() {
 
   if [[ -n "$sudo_group" ]]; then
     as_root usermod -aG "$sudo_group" "$username"
-    log_ok "已将 $username 加入 $sudo_group 组。"
+    echo -e "${SUCCESS}已将 $username 加入 $sudo_group 组。${NC}" >&2
   else
-    log_warn "未找到 sudo/wheel 组，请手动配置 sudo 权限。"
+    echo -e "${WARN}未找到 sudo/wheel 组，请手动配置 sudo 权限。${NC}" >&2
   fi
 
   echo "$username"
 }
+
 
 
 
