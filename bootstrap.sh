@@ -157,6 +157,13 @@ require_cmd() {
   fi
 }
 
+require_root() {
+  if [[ $EUID -ne 0 ]]; then
+    log_error "请以 root 运行该脚本（例如：sudo bash bootstrap.sh）。"
+    exit 1
+  fi
+}
+
 as_root() {
   if [[ $EUID -eq 0 ]]; then
     "$@"
@@ -837,6 +844,7 @@ run_openclaw_config() {
 }
 
 main() {
+  require_root
   configure_memory
   ensure_npm_global_path
   install_openclaw
