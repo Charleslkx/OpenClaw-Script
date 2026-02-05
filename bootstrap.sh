@@ -79,20 +79,32 @@ run_as_openclaw_user() {
     prefix_path="${OPENCLAW_USER_PREFIX}/bin"
   fi
 
+  local uid
+  uid="$(get_openclaw_user_uid)"
+  local runtime=""
+  local env_args=()
+  if [[ -n "$uid" ]]; then
+    runtime="/run/user/${uid}"
+    if [[ -d "$runtime" ]]; then
+      env_args+=("XDG_RUNTIME_DIR=$runtime" "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus")
+    fi
+  fi
+
   if [[ "$(id -un)" == "$OPENCLAW_RUN_AS_USER" ]]; then
     if [[ -n "$prefix_path" ]]; then
-      PATH="$prefix_path:$PATH" "${cmd[@]}"
+      env "${env_args[@]}" PATH="$prefix_path:$PATH" "${cmd[@]}"
     else
-      "${cmd[@]}"
+      env "${env_args[@]}" "${cmd[@]}"
     fi
   else
     if [[ -n "$prefix_path" ]]; then
-      sudo -u "$OPENCLAW_RUN_AS_USER" -H env PATH="$prefix_path:$PATH" "${cmd[@]}"
+      sudo -u "$OPENCLAW_RUN_AS_USER" -H env "${env_args[@]}" PATH="$prefix_path:$PATH" "${cmd[@]}"
     else
-      sudo -u "$OPENCLAW_RUN_AS_USER" -H "${cmd[@]}"
+      sudo -u "$OPENCLAW_RUN_AS_USER" -H env "${env_args[@]}" "${cmd[@]}"
     fi
   fi
 }
+
 
 get_openclaw_user_home() {
   detect_openclaw_user
@@ -102,6 +114,38 @@ get_openclaw_user_home() {
     home_dir="$(eval echo "~$OPENCLAW_RUN_AS_USER" 2>/dev/null || true)"
   fi
   echo "$home_dir"
+}
+
+
+get_openclaw_user_uid() {
+  detect_openclaw_user
+  id -u "$OPENCLAW_RUN_AS_USER" 2>/dev/null || true
+}
+
+ensure_user_systemd() {
+  detect_openclaw_user
+  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+    return 1
+  fi
+
+  local uid
+  uid="$(get_openclaw_user_uid)"
+  if [[ -z "$uid" ]]; then
+    return 1
+  fi
+
+  if command -v loginctl >/dev/null 2>&1; then
+    as_root loginctl enable-linger "$OPENCLAW_RUN_AS_USER" >/dev/null 2>&1 || true
+  fi
+
+  as_root systemctl start "user@${uid}.service" >/dev/null 2>&1 || true
+
+  local runtime="/run/user/${uid}"
+  if [[ ! -d "$runtime" ]]; then
+    as_root mkdir -p "$runtime" >/dev/null 2>&1 || true
+    as_root chown "$OPENCLAW_RUN_AS_USER":"$OPENCLAW_RUN_AS_USER" "$runtime" >/dev/null 2>&1 || true
+    as_root chmod 700 "$runtime" >/dev/null 2>&1 || true
+  fi
 }
 
 
@@ -233,16 +277,20 @@ ensure_npm_global_path() {
     return 0
   fi
 
-  local prefix
-  prefix="$(sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config get prefix 2>/dev/null || true)"
-  if [[ -z "$prefix" || "$prefix" == "null" ]]; then
-    return 0
-  fi
-
-  local bin_dir="${prefix}/bin"
   local home_dir
   home_dir="$(get_openclaw_user_home)"
+  local desired_prefix="${home_dir}/.npm-global"
 
+  local prefix
+  prefix="$(sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config get prefix 2>/dev/null || true)"
+  if [[ -z "$prefix" || "$prefix" == "null" || "$prefix" != "$desired_prefix" ]]; then
+    sudo -u "$OPENCLAW_RUN_AS_USER" -H npm config set prefix "$desired_prefix" >/dev/null 2>&1 || true
+    prefix="$desired_prefix"
+  fi
+
+  OPENCLAW_USER_PREFIX="$prefix"
+
+  local bin_dir="${prefix}/bin"
   if [[ -n "$bin_dir" ]]; then
     sudo -u "$OPENCLAW_RUN_AS_USER" -H mkdir -p "$bin_dir" 2>/dev/null || true
     export PATH="$bin_dir:$PATH"
@@ -262,6 +310,7 @@ ensure_npm_global_path() {
     fi
   done
 }
+
 
 wait_for_user() {
   local username="$1"
@@ -696,7 +745,14 @@ ensure_gateway_service() {
   fi
 
   log_warn "未找到 Gateway service，准备安装（用户: ${OPENCLAW_RUN_AS_USER}）。"
-  enable_user_linger
+  ensure_user_systemd
+
+  if ! run_as_openclaw_user bash -c "systemctl --user show-environment >/dev/null 2>&1"; then
+    log_warn "systemctl --user 不可用，可能未启用用户会话或缺少 dbus-user-session。"
+    log_warn "请以该用户登录一次，或安装 dbus-user-session 后重试。"
+    return 1
+  fi
+
   if ! run_as_openclaw_user openclaw gateway install; then
     log_warn "Gateway service 安装失败，请手动执行: openclaw gateway install"
     return 1
@@ -708,6 +764,7 @@ ensure_gateway_service() {
     log_warn "Gateway service 安装完成，但未检测到 unit 文件。"
   fi
 }
+
 
 
 setup_coding_plan() {
