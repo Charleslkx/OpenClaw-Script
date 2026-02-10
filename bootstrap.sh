@@ -84,8 +84,56 @@ is_linux() {
   [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]]
 }
 
+ensure_dependencies() {
+  log_info "检查系统依赖..."
 
+  local pkgs_to_install=()
 
+  local -A deps=(
+    [curl]="curl"
+    [git]="git"
+    [jq]="jq"
+    [wget]="wget"
+    [unzip]="unzip"
+  )
+
+  for cmd in "${!deps[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      log_warn "缺少命令: $cmd"
+      pkgs_to_install+=("${deps[$cmd]}")
+    fi
+  done
+
+  if (( ${#pkgs_to_install[@]} == 0 )); then
+    log_ok "所有依赖已满足。"
+    return 0
+  fi
+
+  log_info "需要安装: ${pkgs_to_install[*]}"
+
+  if command -v apt-get >/dev/null 2>&1; then
+    as_root apt-get update -y
+    as_root apt-get install -y "${pkgs_to_install[@]}"
+  elif command -v yum >/dev/null 2>&1; then
+    as_root yum install -y "${pkgs_to_install[@]}"
+  elif command -v dnf >/dev/null 2>&1; then
+    as_root dnf install -y "${pkgs_to_install[@]}"
+  elif command -v apk >/dev/null 2>&1; then
+    as_root apk add "${pkgs_to_install[@]}"
+  else
+    log_error "无法识别包管理器，请手动安装: ${pkgs_to_install[*]}"
+    exit 1
+  fi
+
+  for cmd in "${!deps[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      log_error "安装后仍缺少命令: $cmd"
+      exit 1
+    fi
+  done
+
+  log_ok "依赖安装完成。"
+}
 
 
 ensure_npm_global_path() {
@@ -581,53 +629,90 @@ ensure_gateway_service() {
 
 
 
-run_setup_sh_as_root() {
-  require_cmd curl
-
-  local setup_tmp
-  setup_tmp="/tmp/openclaw-setup.sh"
-
-  curl -fsSL https://openclaw.tos-cn-beijing.volces.com/setup.sh -o "$setup_tmp"
-
-  chmod +x "$setup_tmp"
-
-  "$setup_tmp" "$@"
+install_feishu_plugin() {
+  log_info "安装飞书插件..."
+  if ! openclaw plugins install @m1heng-clawd/feishu; then
+    log_error "飞书插件安装失败。"
+    exit 1
+  fi
+  log_ok "飞书插件安装完成。"
 }
 
+setup_ark_config() {
+  local config_dir="${HOME:-/root}/.openclaw"
+  local config_file="${config_dir}/openclaw.json"
 
-setup_coding_plan() {
-  if ask_yes_no "是否使用字节 Coding Plan?" "N"; then
-    local ark_key
-    local model_id
-    local feishu_app_id
-    local feishu_app_secret
-
-    while true; do
-      read -r -s -p "请输入方舟 API Key: " ark_key
-      echo
-      if [[ -n "$ark_key" ]]; then
-        break
-      fi
-      echo "API Key 不能为空。"
-    done
-    read -r -p "请输入 model_id (默认 glm-4.7): " model_id
-    model_id="${model_id:-glm-4.7}"
-    read -r -p "请输入飞书 App ID: " feishu_app_id
-    while true; do
-      read -r -s -p "请输入飞书 App Secret: " feishu_app_secret
-      echo
-      if [[ -n "$feishu_app_secret" ]]; then
-        break
-      fi
-      echo "App Secret 不能为空。"
-    done
+  local ark_key
+  while true; do
+    read -r -s -p "请输入方舟 API Key: " ark_key
     echo
-    log_info "开始安装 Coding Plan 配置..."
-    run_setup_sh_as_root --ark-coding-plan "true" --ark-api-key "$ark_key" --ark-model-id "$model_id" --feishu-app-id "$feishu_app_id" --feishu-app-secret "$feishu_app_secret"
-    log_ok "Coding Plan 配置完成。"
-  else
-    log_warn "已跳过 Coding Plan 配置。"
+    if [[ -n "$ark_key" ]]; then
+      break
+    fi
+    echo "API Key 不能为空。"
+  done
+
+  local model_id
+  read -r -p "请输入 model_id (默认 ark-code-latest): " model_id
+  model_id="${model_id:-ark-code-latest}"
+
+  local ark_url="https://ark.cn-beijing.volces.com/api/coding/v3"
+
+  log_info "写入 models 和 agents 配置..."
+
+  if [[ ! -f "$config_file" ]]; then
+    log_error "未找到 openclaw.json: $config_file"
+    exit 1
   fi
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+
+  jq --arg api_key "$ark_key" \
+     --arg model_id "$model_id" \
+     --arg base_url "$ark_url" \
+  '
+    .models = {
+      "mode": "merge",
+      "providers": {
+        "ark": {
+          "baseUrl": $base_url,
+          "apiKey": $api_key,
+          "api": "openai-completions",
+          "models": [
+            {
+              "id": $model_id,
+              "name": $model_id,
+              "reasoning": false,
+              "input": ["text"],
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0
+              },
+              "contextWindow": 200000,
+              "maxTokens": 8192,
+              "compat": { "supportsDeveloperRole": false }
+            }
+          ]
+        }
+      }
+    }
+    | .agents = {
+      "defaults": {
+        "model": {
+          "primary": ("ark/" + $model_id)
+        },
+        "models": {
+          ("ark/" + $model_id): {}
+        }
+      }
+    }
+  ' "$config_file" > "$tmp_file"
+
+  mv "$tmp_file" "$config_file"
+  log_ok "models 和 agents 配置写入完成。"
 }
 
 
@@ -657,11 +742,13 @@ run_openclaw_config() {
 
 main() {
   require_root
+  ensure_dependencies
   configure_memory
   ensure_npm_global_path
   install_openclaw
+  install_feishu_plugin
+  setup_ark_config
   ensure_gateway_service
-  setup_coding_plan
   run_openclaw_config
 }
 
