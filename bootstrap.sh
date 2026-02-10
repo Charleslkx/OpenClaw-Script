@@ -629,13 +629,12 @@ ensure_gateway_service() {
 
 
 
-install_feishu_plugin() {
-  log_info "安装飞书插件..."
-  if ! openclaw plugins install @m1heng-clawd/feishu; then
-    log_error "飞书插件安装失败。"
-    exit 1
-  fi
-  log_ok "飞书插件安装完成。"
+ensure_feishu_plugin_clean() {
+  log_info "检查飞书插件状态..."
+  # 尝试卸载可能存在的冲突插件（@m1heng-clawd/feishu），因为 openclaw 现在内置了 feishu 插件
+  # 忽略卸载失败的情况（例如未安装）
+  openclaw plugins uninstall @m1heng-clawd/feishu >/dev/null 2>&1 || true
+  log_ok "飞书插件环境清理完成（确保使用内置插件）。"
 }
 
 setup_ark_config() {
@@ -746,7 +745,7 @@ main() {
   configure_memory
   ensure_npm_global_path
   install_openclaw
-  install_feishu_plugin
+  ensure_feishu_plugin_clean
   setup_ark_config
   ensure_gateway_service
   run_openclaw_config
