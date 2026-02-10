@@ -126,15 +126,11 @@ ensure_dependencies() {
   fi
 
   for cmd in "${!deps[@]}"; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-      log_error "安装后仍缺少命令: $cmd"
-      exit 1
-    fi
+    require_cmd "$cmd"
   done
 
   log_ok "依赖安装完成。"
 }
-
 
 ensure_npm_global_path() {
   if ! command -v npm >/dev/null 2>&1; then
@@ -152,10 +148,8 @@ ensure_npm_global_path() {
   fi
 
   local bin_dir="${prefix}/bin"
-  if [[ -n "$bin_dir" ]]; then
-    mkdir -p "$bin_dir" 2>/dev/null || true
-    export PATH="$bin_dir:$PATH"
-  fi
+  mkdir -p "$bin_dir" 2>/dev/null || true
+  export PATH="$bin_dir:$PATH"
 
   local line="export PATH=\"${bin_dir}:\$PATH\""
   local bashrc="${home_dir}/.bashrc"
@@ -172,38 +166,29 @@ ensure_npm_global_path() {
   done
 }
 
-
-# 检查是否已有 zram 配置
 has_zram_configured() {
-  # 检查是否存在 zram 设备且已启用 swap
   if swapon --show=NAME --noheadings 2>/dev/null | grep -q "^/dev/zram"; then
     return 0
   fi
-  # 检查是否存在 zram 服务
   if command -v systemctl >/dev/null 2>&1 && systemctl list-units --type=service --all 2>/dev/null | grep -q "zram"; then
     return 0
   fi
   return 1
 }
 
-# 检查是否已有 swap 配置（不包括 zram）
 has_swap_configured() {
-  # 检查是否存在非 zram 的 swap
   if swapon --show=NAME --noheadings 2>/dev/null | grep -v "^/dev/zram" | grep -q .; then
     return 0
   fi
-  # 检查是否存在 swapfile
   if [[ -f /swapfile ]]; then
     return 0
   fi
-  # 检查 /etc/fstab 中是否有 swap 配置
   if grep -v "^#" /etc/fstab 2>/dev/null | grep -q "swap"; then
     return 0
   fi
   return 1
 }
 
-# 输出当前内存配置信息
 show_current_memory_config() {
   log_info "当前内存配置信息："
   echo
@@ -241,24 +226,14 @@ get_mem_mb() {
 calc_defaults() {
   local mem_mb="$1"
 
-  # Fixed ratio (industry-typical for servers) with min/max caps.
-  # zram = 50% RAM, min 512MB, max 8192MB
-  # swap = 50% RAM, min 1024MB, max 16384MB
+  # zram = 50% RAM (512MB–8GB), swap = 50% RAM (1GB–16GB)
   DEFAULT_ZRAM_MB=$(( mem_mb / 2 ))
-  if (( DEFAULT_ZRAM_MB < 512 )); then
-    DEFAULT_ZRAM_MB=512
-  fi
-  if (( DEFAULT_ZRAM_MB > 8192 )); then
-    DEFAULT_ZRAM_MB=8192
-  fi
+  (( DEFAULT_ZRAM_MB < 512 )) && DEFAULT_ZRAM_MB=512
+  (( DEFAULT_ZRAM_MB > 8192 )) && DEFAULT_ZRAM_MB=8192
 
   DEFAULT_SWAP_MB=$(( mem_mb / 2 ))
-  if (( DEFAULT_SWAP_MB < 1024 )); then
-    DEFAULT_SWAP_MB=1024
-  fi
-  if (( DEFAULT_SWAP_MB > 16384 )); then
-    DEFAULT_SWAP_MB=16384
-  fi
+  (( DEFAULT_SWAP_MB < 1024 )) && DEFAULT_SWAP_MB=1024
+  (( DEFAULT_SWAP_MB > 16384 )) && DEFAULT_SWAP_MB=16384
 
   DEFAULT_SWAPPINESS=180
   DEFAULT_ZRAM_PRIORITY=100
@@ -266,8 +241,7 @@ calc_defaults() {
 }
 
 pick_compression() {
-  local available
-  available=""
+  local available=""
   if [[ -r /sys/module/zram/parameters/comp_algorithm ]]; then
     available="$(cat /sys/module/zram/parameters/comp_algorithm)"
   fi
@@ -275,23 +249,16 @@ pick_compression() {
     echo "zstd"
     return
   fi
-  if echo "$available" | grep -q "zstd"; then
-    echo "zstd"
-    return
-  fi
-  if echo "$available" | grep -q "lz4"; then
-    echo "lz4"
-    return
-  fi
-  if echo "$available" | grep -q "lzo-rle"; then
-    echo "lzo-rle"
-    return
-  fi
-  if echo "$available" | grep -q "lzo"; then
-    echo "lzo"
-    return
-  fi
-  echo "$(echo "$available" | awk '{print $1}' | tr -d '[]')"
+
+  local algo
+  for algo in zstd lz4 lzo-rle lzo; do
+    if echo "$available" | grep -q "$algo"; then
+      echo "$algo"
+      return
+    fi
+  done
+
+  echo "$available" | awk '{print $1}' | tr -d '[]'
 }
 
 apply_swappiness() {
@@ -349,10 +316,7 @@ ensure_zram() {
 
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     local unit="/etc/systemd/system/openclaw-zram.service"
-    local modprobe
-    local mkswap
-    local swapon_bin
-    local swapoff_bin
+    local modprobe mkswap swapon_bin swapoff_bin
     modprobe="$(command -v modprobe || echo /sbin/modprobe)"
     mkswap="$(command -v mkswap || echo /sbin/mkswap)"
     swapon_bin="$(command -v swapon || echo /sbin/swapon)"
@@ -455,19 +419,16 @@ configure_memory() {
     return 0
   fi
 
-  # 检查是否已有配置
   local has_zram=false
   local has_swap=false
 
   if has_zram_configured; then
     has_zram=true
   fi
-
   if has_swap_configured; then
     has_swap=true
   fi
 
-  # 如果已有配置，跳过并显示信息
   if [[ "$has_zram" == true || "$has_swap" == true ]]; then
     log_info "检测到已有内存配置："
     [[ "$has_zram" == true ]] && echo "  - ZRAM: 已配置"
@@ -550,12 +511,47 @@ configure_memory() {
   swapon --show || true
 }
 
+resolve_openclaw_cmd() {
+  if command -v openclaw >/dev/null 2>&1; then
+    echo "openclaw"
+    return 0
+  fi
+
+  local candidates=(
+    "${HOME}/.npm-global/bin/openclaw"
+    "/usr/local/bin/openclaw"
+    "/opt/homebrew/bin/openclaw"
+    "${HOME}/.local/bin/openclaw"
+    "/root/.npm-global/bin/openclaw"
+  )
+
+  if command -v npm >/dev/null 2>&1; then
+    local npm_bin
+    npm_bin="$(npm config get prefix 2>/dev/null)/bin/openclaw"
+    candidates+=("$npm_bin")
+  fi
+
+  for cmd in "${candidates[@]}"; do
+    if [[ -x "$cmd" ]]; then
+      echo "$cmd"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 install_openclaw() {
+  if resolve_openclaw_cmd >/dev/null; then
+    log_ok "OpenClaw 已安装，跳过安装步骤。"
+    return 0
+  fi
+
   log_info "开始安装 OpenClaw (跳过 onboarding)..."
   require_cmd curl
-  bash -c "curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard"
+  curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
 
-  if ! command -v openclaw >/dev/null 2>&1; then
+  if ! resolve_openclaw_cmd >/dev/null; then
     log_error "未找到 openclaw 命令，请确认安装用户或 PATH 配置。"
     exit 1
   fi
@@ -563,25 +559,23 @@ install_openclaw() {
   log_ok "OpenClaw 安装完成。"
 }
 
-
 ensure_gateway_service() {
   log_info "检查 Gateway service..."
   local home_dir="${HOME:-/root}"
-  local unit_path
-  unit_path="${home_dir}/.config/systemd/user/openclaw-gateway.service"
+  local unit_path="${home_dir}/.config/systemd/user/openclaw-gateway.service"
 
   if [[ -f "$unit_path" ]]; then
     log_ok "Gateway service 已存在: $unit_path"
     return 0
   fi
 
-  log_warn "未找到 Gateway service，准备安装（用户: root）。"
+  log_warn "未找到 Gateway service，准备安装。"
   if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
     log_warn "未检测到 systemd，跳过 Gateway service 安装。"
     return 1
   fi
 
-  if ! bash -c "systemctl --user show-environment >/dev/null 2>&1"; then
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
     log_warn "systemctl --user 不可用，可能未启用用户会话或缺少 dbus-user-session。"
 
     if [[ $EUID -eq 0 ]]; then
@@ -600,21 +594,24 @@ ensure_gateway_service() {
       if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
         if ask_yes_no "检测到缺少 dbus-user-session，是否自动安装?" "Y"; then
           log_info "安装 dbus-user-session..."
-          apt-get update -y
-          apt-get install -y dbus-user-session
+          as_root apt-get update -y
+          as_root apt-get install -y dbus-user-session
         else
           log_warn "已跳过 dbus-user-session 安装。"
         fi
       fi
     fi
 
-    if ! bash -c "systemctl --user show-environment >/dev/null 2>&1"; then
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
       log_warn "systemctl --user 仍不可用，请以 root 登录一次或手动安装 dbus-user-session 后重试。"
       return 1
     fi
   fi
 
-  if ! openclaw gateway install; then
+  local claw_cmd
+  claw_cmd="$(resolve_openclaw_cmd)" || { log_warn "未找到 openclaw 命令，跳过 Gateway service 安装。"; return 1; }
+
+  if ! "$claw_cmd" gateway install; then
     log_warn "Gateway service 安装失败，请手动执行: openclaw gateway install"
     return 1
   fi
@@ -626,34 +623,34 @@ ensure_gateway_service() {
   fi
 }
 
-
-
-
 ensure_feishu_plugin_clean() {
   log_info "检查飞书插件状态..."
-  # 尝试卸载可能存在的冲突插件（@m1heng-clawd/feishu），因为 openclaw 现在内置了 feishu 插件
-  # 忽略卸载失败的情况（例如未安装）
-  openclaw plugins uninstall @m1heng-clawd/feishu >/dev/null 2>&1 || true
+  local claw_cmd
+  claw_cmd="$(resolve_openclaw_cmd)" || { log_warn "未找到 openclaw 命令，跳过插件检查。"; return 0; }
 
-  if openclaw plugins 2>/dev/null | grep -q "feishu"; then
+  # 卸载可能冲突的第三方插件（openclaw 现已内置 feishu）
+  "$claw_cmd" plugins uninstall @m1heng-clawd/feishu >/dev/null 2>&1 || true
+
+  if "$claw_cmd" plugins 2>/dev/null | grep -q "feishu"; then
     log_ok "检测到 Feishu 插件。"
   else
     log_warn "未检测到 Feishu 插件，尝试安装..."
-    if command -v pnpm >/dev/null 2>&1; then
-      pnpm add -g @openclaw/feishu
+    if "$claw_cmd" plugins install @openclaw/feishu; then
+      log_ok "Feishu 插件安装完成。"
     else
-      log_warn "未找到 pnpm，尝试使用 npm 安装..."
-      npm install -g @openclaw/feishu
+      log_error "Feishu 插件安装失败，请手动执行: $claw_cmd plugins install @openclaw/feishu"
     fi
-    log_ok "Feishu 插件安装完成。"
   fi
-
-  log_ok "飞书插件环境清理完成（确保使用内置插件）。"
 }
 
 setup_ark_config() {
   local config_dir="${HOME:-/root}/.openclaw"
   local config_file="${config_dir}/openclaw.json"
+
+  if [[ -f "$config_file" ]] && jq -e '.models.providers.ark.apiKey // empty' "$config_file" >/dev/null 2>&1; then
+    log_ok "Ark 模型配置已存在，跳过配置。"
+    return 0
+  fi
 
   local ark_key
   while true; do
@@ -730,7 +727,6 @@ setup_ark_config() {
   log_ok "models 和 agents 配置写入完成。"
 }
 
-
 run_openclaw_config() {
   echo
   log_warn "=================== 重要提示 ==================="
@@ -751,8 +747,11 @@ run_openclaw_config() {
     return 0
   fi
 
+  local claw_cmd
+  claw_cmd="$(resolve_openclaw_cmd)" || { log_warn "未找到 openclaw 命令，跳过 openclaw config。"; return 0; }
+
   log_info "进入 openclaw config 完成后续配置..."
-  openclaw config
+  "$claw_cmd" config
 }
 
 main() {
