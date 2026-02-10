@@ -132,6 +132,63 @@ ensure_dependencies() {
   log_ok "依赖安装完成。"
 }
 
+install_nvm_and_pnpm() {
+  log_info "检查 Node.js 环境 (NVM & PNPM)..."
+
+  export NVM_DIR="$HOME/.nvm"
+  
+  # 如果 nvm 目录不存在，则安装 nvm
+  if [[ ! -d "$NVM_DIR" ]]; then
+    log_info "正在安装 NVM..."
+    # 使用官方安装脚本
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+  else
+    log_info "NVM 目录已存在: $NVM_DIR"
+  fi
+
+  # 加载 nvm
+  # nvm 脚本可能包含未绑定变量，临时关闭 set -u
+  set +u
+  [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+  [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+  set -u
+
+  if ! command -v nvm >/dev/null 2>&1; then
+    log_error "NVM 安装失败或无法加载，请检查网络或手动安装。"
+    exit 1
+  fi
+  
+  log_ok "NVM 加载成功。"
+
+  # 安装/检查 Node.js
+  if ! command -v node >/dev/null 2>&1; then
+    log_info "正在安装 Node.js LTS..."
+    nvm install --lts
+    nvm alias default 'lts/*'
+    nvm use default
+  else
+    log_info "Node.js 已安装: $(node -v)"
+  fi
+
+  # 安装/启用 pnpm
+  if ! command -v pnpm >/dev/null 2>&1; then
+    log_info "正在安装 pnpm..."
+    if command -v corepack >/dev/null 2>&1; then
+      corepack enable
+      log_ok "已通过 corepack 启用 pnpm。"
+    else
+      npm install -g pnpm
+      log_ok "已通过 npm 安装 pnpm。"
+    fi
+  else
+    log_info "pnpm 已安装: $(pnpm -v)"
+  fi
+  
+  # 确保 PATH 变更生效
+  log_ok "Node 环境准备就绪: Node $(node -v), npm $(npm -v), pnpm $(pnpm -v)"
+  echo
+}
+
 ensure_npm_global_path() {
   if ! command -v npm >/dev/null 2>&1; then
     return 0
@@ -635,10 +692,24 @@ ensure_feishu_plugin_clean() {
     log_ok "检测到 Feishu 插件。"
   else
     log_warn "未检测到 Feishu 插件，尝试安装..."
-    if "$claw_cmd" plugins install @openclaw/feishu; then
-      log_ok "Feishu 插件安装完成。"
-    else
-      log_error "Feishu 插件安装失败，请手动执行: $claw_cmd plugins install @openclaw/feishu"
+    
+    local pnpm_installed=false
+    if command -v pnpm >/dev/null 2>&1; then
+        log_info "优先使用 pnpm 安装 Feishu 插件..."
+        if pnpm add -g @openclaw/feishu; then
+            log_ok "Feishu 插件通过 pnpm 安装成功。"
+            pnpm_installed=true
+        else
+            log_warn "pnpm 安装失败，尝试回退到 OpenClaw 内置安装..."
+        fi
+    fi
+
+    if [[ "$pnpm_installed" == false ]]; then
+        if "$claw_cmd" plugins install @openclaw/feishu; then
+          log_ok "Feishu 插件安装完成。"
+        else
+          log_error "Feishu 插件安装失败，请手动执行: $claw_cmd plugins install @openclaw/feishu"
+        fi
     fi
   fi
 }
@@ -758,6 +829,7 @@ main() {
   require_root
   ensure_dependencies
   configure_memory
+  install_nvm_and_pnpm
   ensure_npm_global_path
   install_openclaw
   ensure_feishu_plugin_clean
