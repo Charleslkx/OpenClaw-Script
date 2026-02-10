@@ -599,9 +599,14 @@ resolve_openclaw_cmd() {
 }
 
 install_openclaw() {
-  if resolve_openclaw_cmd >/dev/null; then
-    log_ok "OpenClaw 已安装，跳过安装步骤。"
-    return 0
+  local installed_cmd
+  if installed_cmd="$(resolve_openclaw_cmd)"; then
+    if "$installed_cmd" --version >/dev/null 2>&1; then
+      log_ok "OpenClaw 已安装 ($("$installed_cmd" --version | head -n 1))，跳过安装步骤。"
+      return 0
+    else
+      log_warn "检测到 OpenClaw 残留文件 ($installed_cmd) 但无法正常执行，将重新安装。"
+    fi
   fi
 
   log_info "开始安装 OpenClaw (跳过 onboarding)..."
