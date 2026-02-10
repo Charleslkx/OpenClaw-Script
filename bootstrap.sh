@@ -634,6 +634,13 @@ ensure_feishu_plugin_clean() {
   # 尝试卸载可能存在的冲突插件（@m1heng-clawd/feishu），因为 openclaw 现在内置了 feishu 插件
   # 忽略卸载失败的情况（例如未安装）
   openclaw plugins uninstall @m1heng-clawd/feishu >/dev/null 2>&1 || true
+
+  if openclaw plugins 2>/dev/null | grep -q "feishu"; then
+    log_ok "检测到内置 Feishu 插件。"
+  else
+    log_warn "未检测到内置 Feishu 插件。"
+  fi
+
   log_ok "飞书插件环境清理完成（确保使用内置插件）。"
 }
 
@@ -660,8 +667,8 @@ setup_ark_config() {
   log_info "写入 models 和 agents 配置..."
 
   if [[ ! -f "$config_file" ]]; then
-    log_error "未找到 openclaw.json: $config_file"
-    exit 1
+    log_warn "未找到 openclaw.json，创建默认配置..."
+    echo "{}" > "$config_file"
   fi
 
   local tmp_file
