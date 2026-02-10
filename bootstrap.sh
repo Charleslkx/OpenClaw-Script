@@ -638,7 +638,7 @@ ensure_feishu_plugin_clean() {
   if openclaw plugins 2>/dev/null | grep -q "feishu"; then
     log_ok "检测到内置 Feishu 插件。"
   else
-    log_warn "未检测到内置 Feishu 插件。"
+    log_warn "未在插件列表检测到 'feishu'（若为内置功能可能不显示在此列表）。"
   fi
 
   log_ok "飞书插件环境清理完成（确保使用内置插件）。"
@@ -665,6 +665,8 @@ setup_ark_config() {
   local ark_url="https://ark.cn-beijing.volces.com/api/coding/v3"
 
   log_info "写入 models 和 agents 配置..."
+
+  mkdir -p "$config_dir"
 
   if [[ ! -f "$config_file" ]]; then
     log_warn "未找到 openclaw.json，创建默认配置..."
