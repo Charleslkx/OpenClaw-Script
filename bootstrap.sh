@@ -636,9 +636,16 @@ ensure_feishu_plugin_clean() {
   openclaw plugins uninstall @m1heng-clawd/feishu >/dev/null 2>&1 || true
 
   if openclaw plugins 2>/dev/null | grep -q "feishu"; then
-    log_ok "检测到内置 Feishu 插件。"
+    log_ok "检测到 Feishu 插件。"
   else
-    log_warn "未在插件列表检测到 'feishu'（若为内置功能可能不显示在此列表）。"
+    log_warn "未检测到 Feishu 插件，尝试安装..."
+    if command -v pnpm >/dev/null 2>&1; then
+      pnpm add -g @openclaw/feishu
+    else
+      log_warn "未找到 pnpm，尝试使用 npm 安装..."
+      npm install -g @openclaw/feishu
+    fi
+    log_ok "Feishu 插件安装完成。"
   fi
 
   log_ok "飞书插件环境清理完成（确保使用内置插件）。"
