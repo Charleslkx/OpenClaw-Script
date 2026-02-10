@@ -685,31 +685,25 @@ ensure_feishu_plugin_clean() {
   local claw_cmd
   claw_cmd="$(resolve_openclaw_cmd)" || { log_warn "未找到 openclaw 命令，跳过插件检查。"; return 0; }
 
-  # 卸载可能冲突的第三方插件（openclaw 现已内置 feishu）
-  "$claw_cmd" plugins uninstall @m1heng-clawd/feishu >/dev/null 2>&1 || true
+  if "$claw_cmd" plugins 2>/dev/null | grep -q "@openclaw/feishu"; then
+    log_warn "检测到废弃的 @openclaw/feishu 插件，正在卸载..."
+    "$claw_cmd" plugins uninstall @openclaw/feishu >/dev/null 2>&1 || true
+  fi
 
-  if "$claw_cmd" plugins 2>/dev/null | grep -q "feishu"; then
-    log_ok "检测到 Feishu 插件。"
-  else
-    log_warn "未检测到 Feishu 插件，尝试安装..."
-    
-    local pnpm_installed=false
-    if command -v pnpm >/dev/null 2>&1; then
-        log_info "优先使用 pnpm 安装 Feishu 插件..."
-        if pnpm add -g @openclaw/feishu; then
-            log_ok "Feishu 插件通过 pnpm 安装成功。"
-            pnpm_installed=true
-        else
-            log_warn "pnpm 安装失败，尝试回退到 OpenClaw 内置安装..."
-        fi
+  if "$claw_cmd" plugins 2>/dev/null | grep -q "@m1heng-clawd/feishu"; then
+    log_ok "检测到 @m1heng-clawd/feishu 插件。"
+    log_info "正在更新插件..."
+    if "$claw_cmd" plugins update feishu; then
+      log_ok "Feishu 插件更新完成。"
+    else
+      log_error "Feishu 插件更新失败。"
     fi
-
-    if [[ "$pnpm_installed" == false ]]; then
-        if "$claw_cmd" plugins install @openclaw/feishu; then
-          log_ok "Feishu 插件安装完成。"
-        else
-          log_error "Feishu 插件安装失败，请手动执行: $claw_cmd plugins install @openclaw/feishu"
-        fi
+  else
+    log_warn "未检测到 @m1heng-clawd/feishu 插件，开始安装..."
+    if "$claw_cmd" plugins install @m1heng-clawd/feishu; then
+      log_ok "Feishu 插件 (@m1heng-clawd/feishu) 安装完成。"
+    else
+      log_error "Feishu 插件安装失败，请手动执行: $claw_cmd plugins install @m1heng-clawd/feishu"
     fi
   fi
 }
