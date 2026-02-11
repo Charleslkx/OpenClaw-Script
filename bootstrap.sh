@@ -685,7 +685,7 @@ ensure_gateway_service() {
   fi
 }
 
-ensure_feishu_plugin_clean() {
+ensure_feishu_plugin_enabled() {
   log_info "检查飞书插件状态..."
   local claw_cmd
   claw_cmd="$(resolve_openclaw_cmd)" || { log_warn "未找到 openclaw 命令，跳过插件检查。"; return 0; }
@@ -696,56 +696,66 @@ ensure_feishu_plugin_clean() {
   fi
 
   if "$claw_cmd" plugins 2>/dev/null | grep -q "@m1heng-clawd/feishu"; then
-    log_ok "检测到 @m1heng-clawd/feishu 插件。"
-    log_info "正在更新插件..."
-    if "$claw_cmd" plugins update feishu; then
-      log_ok "Feishu 插件更新完成。"
-    else
-      log_error "Feishu 插件更新失败。"
-    fi
+    log_warn "检测到第三方 @m1heng-clawd/feishu 插件，正在卸载..."
+    "$claw_cmd" plugins uninstall @m1heng-clawd/feishu >/dev/null 2>&1 || true
+  fi
+
+  log_info "启用官方 Feishu 插件..."
+  if "$claw_cmd" plugins enable feishu; then
+    log_ok "官方 Feishu 插件已启用。"
   else
-    log_warn "未检测到 @m1heng-clawd/feishu 插件，开始安装..."
-    if "$claw_cmd" plugins install @m1heng-clawd/feishu; then
-      log_ok "Feishu 插件 (@m1heng-clawd/feishu) 安装完成。"
-    else
-      log_error "Feishu 插件安装失败，请手动执行: $claw_cmd plugins install @m1heng-clawd/feishu"
-    fi
+    log_error "官方 Feishu 插件启用失败，请手动执行: $claw_cmd plugins enable feishu"
   fi
 }
 
 setup_ark_config() {
   local config_dir="${HOME:-/root}/.openclaw"
   local config_file="${config_dir}/openclaw.json"
-
-  if [[ -f "$config_file" ]] && jq -e '.models.providers.ark.apiKey // empty' "$config_file" >/dev/null 2>&1; then
-    log_ok "Ark 模型配置已存在，跳过配置。"
-    return 0
-  fi
-
-  local ark_key
-  while true; do
-    read -r -s -p "请输入方舟 API Key: " ark_key
-    echo
-    if [[ -n "$ark_key" ]]; then
-      break
-    fi
-    echo "API Key 不能为空。"
-  done
-
-  local model_id
-  read -r -p "请输入 model_id (默认 ark-code-latest): " model_id
-  model_id="${model_id:-ark-code-latest}"
-
-  local ark_url="https://ark.cn-beijing.volces.com/api/coding/v3"
-
-  log_info "写入 models 和 agents 配置..."
+  local default_model_id="ark-code-latest"
+  local existing_api_key=""
+  local existing_model_id=""
 
   mkdir -p "$config_dir"
 
   if [[ ! -f "$config_file" ]]; then
     log_warn "未找到 openclaw.json，创建默认配置..."
     echo "{}" > "$config_file"
+  else
+    existing_api_key="$(jq -r '.models.providers.volcengine.apiKey // empty' "$config_file" 2>/dev/null || true)"
+    existing_model_id="$(jq -r '.models.providers.volcengine.models[0].id // empty' "$config_file" 2>/dev/null || true)"
+    if [[ -z "$existing_api_key" ]]; then
+      existing_api_key="$(jq -r '.models.providers.ark.apiKey // empty' "$config_file" 2>/dev/null || true)"
+    fi
+    if [[ -z "$existing_model_id" ]]; then
+      existing_model_id="$(jq -r '.models.providers.ark.models[0].id // empty' "$config_file" 2>/dev/null || true)"
+    fi
   fi
+
+  local ark_key="$existing_api_key"
+  if [[ -z "$ark_key" ]]; then
+    while true; do
+      read -r -s -p "请输入方舟 API Key: " ark_key
+      echo
+      if [[ -n "$ark_key" ]]; then
+        break
+      fi
+      echo "API Key 不能为空。"
+    done
+  else
+    log_ok "检测到已存在的 API Key，继续沿用当前配置。"
+  fi
+
+  local model_id="${existing_model_id:-$default_model_id}"
+  if [[ -z "$existing_model_id" ]]; then
+    read -r -p "请输入 model_id (默认 ${default_model_id}): " model_id
+    model_id="${model_id:-$default_model_id}"
+  else
+    log_ok "检测到已存在模型 ID: $model_id"
+  fi
+
+  local ark_url="https://ark.cn-beijing.volces.com/api/coding/v3"
+
+  log_info "按标准形态写入 openclaw.json..."
 
   local tmp_file
   tmp_file="$(mktemp)"
@@ -754,47 +764,114 @@ setup_ark_config() {
      --arg model_id "$model_id" \
      --arg base_url "$ark_url" \
   '
-    .models = {
-      "mode": "merge",
-      "providers": {
-        "ark": {
-          "baseUrl": $base_url,
-          "apiKey": $api_key,
-          "api": "openai-completions",
-          "models": [
-            {
-              "id": $model_id,
-              "name": $model_id,
-              "reasoning": false,
-              "input": ["text"],
-              "cost": {
-                "input": 0,
-                "output": 0,
-                "cacheRead": 0,
-                "cacheWrite": 0
-              },
-              "contextWindow": 200000,
-              "maxTokens": 8192,
-              "compat": { "supportsDeveloperRole": false }
+    {
+      "meta": (
+        .meta // {
+          "lastTouchedVersion": "",
+          "lastTouchedAt": ""
+        }
+      ),
+      "wizard": (
+        .wizard // {
+          "lastRunAt": "",
+          "lastRunVersion": "",
+          "lastRunCommand": "onboard",
+          "lastRunMode": "local"
+        }
+      ),
+      "auth": {
+        "profiles": (
+          (.auth.profiles // {})
+          + {
+              "volcengine:default": {
+                "provider": "volcengine",
+                "mode": "api_key"
+              }
             }
-          ]
+        )
+      },
+      "models": {
+        "providers": {
+          "volcengine": {
+            "baseUrl": $base_url,
+            "apiKey": $api_key,
+            "api": "openai-completions",
+            "models": [
+              {
+                "id": $model_id,
+                "name": (
+                  if $model_id == "ark-code-latest" then
+                    "Ark Code Latest"
+                  else
+                    $model_id
+                  end
+                )
+              }
+            ]
+          }
         }
-      }
-    }
-    | .agents = {
-      "defaults": {
-        "model": {
-          "primary": ("ark/" + $model_id)
+      },
+      "agents": {
+        "defaults": {
+          "model": {
+            "primary": ("volcengine/" + $model_id)
+          },
+          "models": {
+            ("volcengine/" + $model_id): {
+              "alias": "volcengine"
+            }
+          },
+          "workspace": "~/.openclaw/workspace",
+          "compaction": {
+            "mode": "safeguard"
+          },
+          "maxConcurrent": 4,
+          "subagents": {
+            "maxConcurrent": 8
+          }
+        }
+      },
+      "messages": {
+        "ackReactionScope": (.messages.ackReactionScope // "group-mentions")
+      },
+      "commands": {
+        "native": (.commands.native // "auto"),
+        "nativeSkills": (.commands.nativeSkills // "auto")
+      },
+      "hooks": {
+        "internal": {
+          "enabled": (.hooks.internal.enabled // true),
+          "entries": {
+            "command-logger": {
+              "enabled": (.hooks.internal.entries["command-logger"].enabled // true)
+            },
+            "session-memory": {
+              "enabled": (.hooks.internal.entries["session-memory"].enabled // true)
+            }
+          }
+        }
+      },
+      "gateway": {
+        "port": (.gateway.port // 18789),
+        "mode": (.gateway.mode // "local"),
+        "bind": (.gateway.bind // "loopback"),
+        "auth": {
+          "mode": (.gateway.auth.mode // "token"),
+          "token": (.gateway.auth.token // "<YOUR_GATEWAY_TOKEN>")
         },
-        "models": {
-          ("ark/" + $model_id): {}
+        "tailscale": {
+          "mode": (.gateway.tailscale.mode // "off"),
+          "resetOnExit": (.gateway.tailscale.resetOnExit // false)
         }
+      },
+      "plugins": {
+        "entries": (.plugins.entries // {})
       }
     }
   ' "$config_file" > "$tmp_file"
 
   mv "$tmp_file" "$config_file"
-  log_ok "models 和 agents 配置写入完成。"
+  log_ok "openclaw.json 已按目标形态写入完成。"
 }
 
 run_openclaw_config() {
@@ -831,7 +908,7 @@ main() {
   install_nvm_and_pnpm
   ensure_npm_global_path
   install_openclaw
-  ensure_feishu_plugin_clean
+  ensure_feishu_plugin_enabled
   setup_ark_config
   ensure_gateway_service
   run_openclaw_config

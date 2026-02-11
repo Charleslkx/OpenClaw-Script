@@ -1,99 +1,91 @@
 {
-    "meta": {
-        "lastTouchedVersion": "2026.2.6-3",
-        "lastTouchedAt": "2026-02-10T11:33:58.034Z"
-    },
-    "wizard": {
-        "lastRunAt": "2026-02-10T11:33:58.004Z",
-        "lastRunVersion": "2026.2.6-3",
-        "lastRunCommand": "configure",
-        "lastRunMode": "local"
-    },
-    "models": {
-        "mode": "merge",
-        "providers": {
-            "ark": {
-                "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
-                "apiKey": "xxxxxxxxxx",
-                "api": "openai-completions",
-                "models": [
-                    {
-                        "id": "kimi-k2.5",
-                        "name": "kimi-k2.5",
-                        "reasoning": false,
-                        "input": [
-                            "text"
-                        ],
-                        "cost": {
-                            "input": 0,
-                            "output": 0,
-                            "cacheRead": 0,
-                            "cacheWrite": 0
-                        },
-                        "contextWindow": 200000,
-                        "maxTokens": 8192,
-                        "headers": {
-                            "X-Client-Request-Id": "ecs-openclaw/0203.1/unknown"
-                        },
-                        "compat": {
-                            "supportsDeveloperRole": false
-                        }
-                    }
-                ]
-            }
-        }
-    },
-    "agents": {
-        "defaults": {
-            "model": {
-                "primary": ""
-            },
-            "models": {
-                "ark/kimi-k2.5": {}
-            },
-            "compaction": {
-                "mode": "safeguard"
-            },
-            "maxConcurrent": 4,
-            "subagents": {
-                "maxConcurrent": 8
-            }
-        }
-    },
-    "messages": {
-        "ackReactionScope": "group-mentions"
-    },
-    "commands": {
-        "native": "auto",
-        "nativeSkills": "auto"
-    },
-    "gateway": {
-        "mode": "local",
-        "auth": {
-            "token": "9a5a8719373fd23e4a04f0d35c6e7eceddcf82fbda604710"
-        }
-    },
-    "plugins": {
-        "entries": {
-            "feishu": {
-                "enabled": true
-            }
-        },
-        "installs": {
-            "feishu": {
-                "source": "npm",
-                "spec": "@m1heng-clawd/feishu",
-                "installPath": "/root/.openclaw/extensions/feishu",
-                "version": "0.1.9",
-                "installedAt": "2026-02-10T11:11:34.897Z"
-            }
-        }
-    },
-    "channels": {
-        "feishu": {
-            "enabled": true,
-            "domain": "feishu",
-            "groupPolicy": "open"
-        }
+  "meta": {
+    "lastTouchedVersion": "2026.1.24-3",
+    "lastTouchedAt": "2026-01-27T08:01:28.453Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-01-27T07:34:55.069Z",
+    "lastRunVersion": "2026.1.24-3",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "profiles": {
+        "volcengine:default": {
+        "provider": "volcengine",
+        "mode": "api_key"
+      }
     }
+  },
+  "models": {
+    "providers": {
+      "volcengine": {
+        "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3", 
+        "apiKey": "<ARK_API_KEY>", 
+        "api": "openai-completions",
+        "models": [ 
+          {
+            "id": "ark-code-latest",
+            "name": "Ark Code Latest"
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "volcengine/ark-code-latest"
+      },
+      "models": {
+        "volcengine/ark-code-latest": {
+          "alias": "volcengine"
+        }
+      },
+      "workspace": "~/.openclaw/workspace", 
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      }
+    }
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto"
+  },
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "command-logger": {
+          "enabled": true
+        },
+        "session-memory": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": "<YOUR_GATEWAY_TOKEN>" 
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    }
+  },
+  "plugins": {
+    "entries": {}
+  }
 }
