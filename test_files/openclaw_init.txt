@@ -1,1 +1,0 @@
-使用 curl -fsSL https: //openclaw.ai/install.sh | bash -s -- --no-onboard 安装后，openclaw.json 不会自动创建
